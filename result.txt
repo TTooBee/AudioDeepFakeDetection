@@ -1,0 +1,4 @@
+Evaluation of file: features_fake_for_test.txt
+0 : fake, 1 : real
+
+0.572720
