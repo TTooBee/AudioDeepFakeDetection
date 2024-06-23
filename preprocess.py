@@ -1,52 +1,112 @@
 import numpy as np
 import os
+from tqdm import tqdm
+import torchaudio
+import torchaudio.transforms as transforms
 
 def load_and_pad_matrix(feature_path, target_length=324, feature_dim=40):
-    # 텍스트 파일에서 행렬을 읽어옵니다.
     with open(feature_path, 'r') as file:
         matrix = np.array([list(map(float, line.split())) for line in file])
 
-    # 행 길이에 따라 자르거나 패딩을 추가합니다.
     if matrix.shape[0] > target_length:
-        matrix = matrix[:target_length, :]  # 행 길이가 너무 길면 자릅니다.
+        matrix = matrix[:target_length, :]
     elif matrix.shape[0] < target_length:
-        # 행 길이가 짧은 경우 패딩을 추가합니다.
         padding = np.zeros((target_length - matrix.shape[0], feature_dim))
         matrix = np.vstack((matrix, padding))
     
-    # 행렬을 transpose하여 (40, 324) 형태로 만듭니다.
-    return matrix.T
+    return matrix.T  # (feature_dim, target_length)
 
-def load_features(base_folder):
-    # 모든 행렬을 저장할 리스트입니다.
+def compute_delta(features):
+    delta = np.zeros_like(features)
+    for t in range(1, features.shape[1] - 1):
+        delta[:, t] = (features[:, t + 1] - features[:, t - 1]) / 2
+    delta[:, 0] = features[:, 1] - features[:, 0]
+    delta[:, -1] = features[:, -1] - features[:, -2]
+    return delta
+
+def load_features(base_folder, feature_dim):
     all_features = []
+    feature_folder = os.path.join(base_folder, f'features_{feature_dim}')
     
-    # features_real 폴더 내의 모든 서브폴더를 순회합니다.
-    for folder_name in os.listdir(base_folder):
-        folder_path = os.path.join(base_folder, folder_name)
-        feature_path = os.path.join(folder_path, 'features(evs_enc).txt')
-        if os.path.isfile(feature_path):
-            matrix = load_and_pad_matrix(feature_path)
-            all_features.append(matrix)
+    if not os.path.isdir(feature_folder):
+        return np.array(all_features)
+
+    files = [f for f in os.listdir(feature_folder) if f.endswith('.txt')]
     
-    # 모든 행렬을 하나의 numpy 배열로 변환합니다.
+    for file_name in tqdm(files, desc="Processing files", unit="file"):
+        feature_path = os.path.join(feature_folder, file_name)
+        matrix = load_and_pad_matrix(feature_path, feature_dim=feature_dim)
+        delta = compute_delta(matrix)
+        delta_delta = compute_delta(delta)
+        combined = np.concatenate((matrix, delta, delta_delta), axis=1)  # (feature_dim, target_length*3)
+        all_features.append(combined)
     return np.array(all_features)
 
+def extract_mfcc(base_folder, feature_dim, sample_rate=16000, n_fft=400, hop_length=160, win_length=400):
+    all_features = []
+    wav_folder = os.path.join(base_folder, 'wav')
+    
+    if not os.path.isdir(wav_folder):
+        return np.array(all_features)
+
+    files = [f for f in os.listdir(wav_folder) if f.endswith(('.flac', '.wav'))]
+    
+    n_mels = feature_dim * 3  # n_mels를 feature_dim의 3배로 설정
+    
+    mfcc_transform = transforms.MFCC(
+        sample_rate=sample_rate,
+        n_mfcc=feature_dim,  # 추출할 MFCC 계수의 개수
+        melkwargs={
+            'n_fft': n_fft,
+            'n_mels': n_mels,  # 멜 필터의 개수
+            'hop_length': hop_length,
+            'win_length': win_length
+        }
+    )
+    
+    for file_name in tqdm(files, desc="Processing audio files", unit="file"):
+        wav_path = os.path.join(wav_folder, file_name)
+        waveform, sr = torchaudio.load(wav_path)
+        
+        # Sample rate 변경
+        if sr != sample_rate:
+            waveform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=sample_rate)(waveform)
+        
+        mfcc = mfcc_transform(waveform)
+        mfcc = mfcc.squeeze(0).numpy()  # (feature_dim, time_length)
+        
+        # Padding or trimming to ensure consistent shape
+        if mfcc.shape[1] > 324:
+            mfcc = mfcc[:, :324]
+        elif mfcc.shape[1] < 324:
+            padding = np.zeros((feature_dim, 324 - mfcc.shape[1]))
+            mfcc = np.hstack((mfcc, padding))
+        
+        delta = compute_delta(mfcc)
+        delta_delta = compute_delta(delta)
+        combined = np.concatenate((mfcc, delta, delta_delta), axis=1)  # (feature_dim, 324*3)
+        all_features.append(combined)
+    return np.array(all_features)
 
 if __name__ == "__main__":
-    # features 변수에 결과를 저장합니다.
-    features_real_temp = load_features('features_real_temp')
-    print(features_real_temp.shape)  # 출력 결과는 (파일 수, 40, 324) 형태가 됩니다.
+    import argparse
 
-    # features_fake_temp = load_features('features_fake_temp')
+    parser = argparse.ArgumentParser(description="Preprocess audio features.")
+    parser.add_argument('--real', type=str, required=True, help='Directory containing real audio features.')
+    parser.add_argument('--fake', type=str, required=True, help='Directory containing fake audio features.')
+    parser.add_argument('--feature_dim', type=int, required=True, help='Number of features to use.')
+    parser.add_argument('--feature', type=str, choices=['mfcc', 'evs'], required=True, help='Feature type to use.')
+    args = parser.parse_args()
 
-    # print(features_real_temp[0].shape)
+    if args.feature == 'evs':
+        features_real = load_features(args.real, args.feature_dim)
+        print(features_real.shape)  # 출력 결과는 (파일 수, feature_dim, 324*3) 형태가 됩니다.
 
-    # for i in range(1, 7):
-    #     mean_real_temp = np.mean(features_real_temp[i])
-    #     variance_real_temp = np.var(features_real_temp[i], ddof=0)
-    
-    #     mean_fake_temp = np.mean(features_fake_temp[i])
-    #     variance_fake_temp = np.var(features_fake_temp[i], ddof=0)
-    
-    
+        features_fake = load_features(args.fake, args.feature_dim)
+        print(features_fake.shape)  # 출력 결과는 (파일 수, feature_dim, 324*3) 형태가 됩니다.
+    elif args.feature == 'mfcc':
+        features_real = extract_mfcc(args.real, args.feature_dim)
+        print(features_real.shape)  # 출력 결과는 (파일 수, feature_dim, 324*3) 형태가 됩니다.
+
+        features_fake = extract_mfcc(args.fake, args.feature_dim)
+        print(features_fake.shape)  # 출력 결과는 (파일 수, feature_dim, 324*3) 형태가 됩니다.
