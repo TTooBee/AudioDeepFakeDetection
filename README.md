@@ -1,14 +1,8 @@
-# 깃허브 푸시할때 비밀번호
-
-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
-
-
 # train.py 실행 명령어 
 
 ```bash
-python train.py --real features_real_temp --fake features_fake_temp --batch_size 1 --epochs 1
+python train.py --feature evs --feature_dim 12 --real LibriSpeech/train-clean-360/all_audio --fake asvspoof2019/LA/ASVspoof2019_LA_train/flac --batch_size 32 --epochs 100000 --model lstm
 ```
-실제로 학습 코드 실행할때는 batch_size 128, epochs 20으로 설정해서 해보자.
 
 
 # inference.py 실행 명령어
@@ -21,3 +15,5 @@ python inference.py --model model_weights.pt --in features_fake_for_test.txt --o
 
 # 저장된 데이터
 features_real과 features_fake에 모든 feature 파일 존재. 
+
+# 깃허브 사용법
